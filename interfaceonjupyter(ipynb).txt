@@ -1,0 +1,112 @@
+from pynq import Overlay, allocate
+from pynq.lib.dma import DMA
+import numpy as np
+import cv2
+from matplotlib import pyplot as plt
+import time
+
+# Define Sobel filter register addresses
+XSOBEL_FILTER_CONTROL_ADDR_AP_CTRL = 0x00
+XSOBEL_FILTER_CONTROL_ADDR_GIE = 0x04
+XSOBEL_FILTER_CONTROL_ADDR_IER = 0x08
+XSOBEL_FILTER_CONTROL_ADDR_ISR = 0x0c
+XSOBEL_FILTER_CONTROL_ADDR_ROWS_DATA = 0x10
+XSOBEL_FILTER_CONTROL_ADDR_COLS_DATA = 0x18
+
+# Load the overlay
+overlay = Overlay("design_1.bit")
+
+# Initialize DMA
+dma = overlay.axi_dma_0
+
+# Reference to the Sobel filter IP core
+sobel_filter_ip = overlay.sobel_filter_0
+
+# Function to read and print IP core registers
+def print_ip_registers(ip, num_registers):
+	print(f"Reading {num_registers} registers of the IP core...")
+	for reg_offset in range(0, num_registers * 4, 4):
+    	reg_value = ip.read(reg_offset)
+    	print(f"Register 0x{reg_offset:02X}: 0x{reg_value:08X}")
+
+# Define the number of registers to read
+num_registers = 10  # Adjust as per your IP core's documentation
+
+# Print the registers of the Sobel filter IP core
+print_ip_registers(sobel_filter_ip, num_registers)
+
+# Load an image using OpenCV
+image = cv2.imread('lena.jpg', cv2.IMREAD_GRAYSCALE)
+rows, cols = image.shape
+
+# Ensure image is uint32
+image = image.astype(np.uint32)
+
+# Allocate buffers for input and output
+in_buffer = allocate(shape=(rows*cols,), dtype=np.uint32)
+out_buffer = allocate(shape=(rows*cols,), dtype=np.uint32)
+
+# Copy the image data to the input buffer
+np.copyto(in_buffer, image.flatten())
+
+
+# Set the parameters for the Sobel filter IP
+sobel_filter_ip.write(XSOBEL_FILTER_CONTROL_ADDR_ROWS_DATA, rows)
+sobel_filter_ip.write(XSOBEL_FILTER_CONTROL_ADDR_COLS_DATA, cols)
+
+# Print registers after setting rows and cols
+print("Registers after setting rows and cols:")
+print_ip_registers(sobel_filter_ip, num_registers)
+
+# Start the Sobel filter IP core
+sobel_filter_ip.write(XSOBEL_FILTER_CONTROL_ADDR_AP_CTRL, 0x81)  # Start the IP core
+# Transfer input data to FPGA
+dma.sendchannel.transfer(in_buffer)
+
+# Transfer output data from FPGA
+dma.recvchannel.transfer(out_buffer)
+
+# Wait for sendchannel to complete
+timeout = 5  # seconds
+start_time = time.time()
+
+while not dma.sendchannel.idle:
+	if time.time() - start_time > timeout:
+    	print("Timeout occurred during dma.sendchannel.wait()")
+    	break
+
+# Wait for recvchannel to complete
+start_time = time.time()
+
+while not dma.recvchannel.idle:
+	if time.time() - start_time > timeout:
+    	print("Timeout occurred during dma.recvchannel.wait()")
+    	break
+
+# Wait for the Sobel filter IP core to complete
+start_time = time.time()
+
+while not sobel_filter_ip.read(XSOBEL_FILTER_CONTROL_ADDR_AP_CTRL) & 0x02:
+	if time.time() - start_time > timeout:
+    	print("Timeout occurred during Sobel filter IP core processing")
+    	break
+
+
+# Print registers after starting the IP core
+print("Registers after starting the IP core:")
+print_ip_registers(sobel_filter_ip, num_registers)
+
+# Reshape the output buffer to the image shape
+output_image = out_buffer.reshape((rows, cols)).astype(np.uint8)
+
+# Display the original and processed images
+plt.figure(figsize=(10,5))
+plt.subplot(1, 2, 1)
+plt.title("Original Image")
+plt.imshow(image, cmap='gray')
+
+plt.subplot(1, 2, 2)
+plt.title("Sobel Filtered Image")
+plt.imshow(output_image, cmap='gray')
+
+plt.show()
